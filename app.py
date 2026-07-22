@@ -90,62 +90,107 @@ def get_todays_events(service):
 # 3. INTERFACE VISUAL (STREAMLIT)
 # -------------------------------------------------------------
 def main():
-    # Definição de página única (duplicação removida)
-    st.set_page_config(page_title="Agenda Check-in", page_icon="images/LogoDec.png")
+    # Definição de página única
+    st.set_page_config(page_title="Agenda Check-in", page_icon="images/LogoDec.png", layout="wide")
 
-    # Layout do cabeçalho corrigido
     col_title_1, col_title_2, col_title_3 = st.columns([1, 6, 1], vertical_alignment="center")
-
     col_title_1.image("images/LogoDec.png", width=50)
-    col_title_2.markdown("<h1 style='text-align: center; margin: 0;'>Agenda Diária - SG1/DEC</h1>", unsafe_allow_html=True)
+    col_title_2.markdown("<h1 style='text-align: center; margin: 0;'>SG1/DEC</h1>", unsafe_allow_html=True)
 
     with col_title_3:
         st.markdown("<div style='text-align: right;'>", unsafe_allow_html=True)
         st.image("images/LogoDec.png", width=50)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Inicializar Banco de Dados SQLite
-    init_db()
+    col_principal_esquerda, col_princial_meio, col_principal_direita = st.columns([1.5, 3, 1.5])
 
-    # Tentar conectar ao Google Calendar utilizando st.secrets
-    try:
-        service = get_calendar_service()
-        eventos = get_todays_events(service)
-    except Exception as e:
-        st.error(f"Erro ao conectar com o Google Calendar. Verifique os Secrets configurados. Erro: {e}")
-        return
-
-    st.subheader(f"Eventos de Hoje ({datetime.date.today().strftime('%d/%m/%Y')})")
-
-    if not eventos:
-        st.info("Não tem eventos agendados para hoje na sua Google Agenda!")
-        return
-
-    # Desenhar a lista de eventos no ecrã
-    for evento in eventos:
-        nome_evento = evento.get('summary', 'Sem Título')
-        event_id = evento['id']
+    with col_principal_esquerda:
+        st.subheader("📍 Status da Chefia")
+    
+        # Substitua pelo caminho real da foto do chefe
+        st.image("images/foto_chefe.jpg", caption="Chefe da Secção", width=150)
+    
+        # Inicializa o estado se não existir
+        if "status_chefe" not in st.session_state:
+            st.session_state.status_chefe = "🟢 Presente"
         
-        inicio = evento['start'].get('dateTime', evento['start'].get('date'))
+        status = st.radio(
+            "Estado atual:",
+            ["🟢 Presente", "🟡 Em Reunião", "🔴 Ausente/Férias"],
+            key="status_chefe"
+        )
+    
+        # Mensagem de feedback visual rápido
+        st.info(f"O Chefe está: **{status}**")
+
+    with col_princial_meio:
+
+        st.subheader("Agenda Diária 📅")
+        # Inicializar Banco de Dados SQLite
+       
+        init_db()
+
+        # Tentar conectar ao Google Calendar utilizando st.secrets
         try:
-            hora_formatada = datetime.datetime.fromisoformat(inicio.replace('Z', '+00:00')).strftime('%H:%M')
-        except:
-            hora_formatada = "Dia inteiro"
+            service = get_calendar_service()
+            eventos = get_todays_events(service)
+        except Exception as e:
+            st.error(f"Erro ao conectar com o Google Calendar. Verifique os Secrets configurados. Erro: {e}")
+            return
 
-        is_done = is_event_completed(event_id)
+        st.subheader(f"Eventos de Hoje ({datetime.date.today().strftime('%d/%m/%Y')})")
 
-        # Colunas reconfiguradas corretamente
-        col1, col2 = st.columns([1, 4])
-        
-        with col1:
-            st.write(f"**{hora_formatada}**")
+        if not eventos:
+            st.info("Não tem eventos agendados para hoje na sua Google Agenda!")
+            return
+
+        # Desenhar a lista de eventos no ecrã
+        for evento in eventos:
+            nome_evento = evento.get('summary', 'Sem Título')
+            event_id = evento['id']
             
-        with col2:
-            novo_status = st.checkbox(f"{nome_evento}", value=is_done, key=event_id)
+            inicio = evento['start'].get('dateTime', evento['start'].get('date'))
+            try:
+                hora_formatada = datetime.datetime.fromisoformat(inicio.replace('Z', '+00:00')).strftime('%H:%M')
+            except:
+                hora_formatada = "Dia inteiro"
+
+            is_done = is_event_completed(event_id)
+
+            # Colunas reconfiguradas corretamente
+            col1, col2 = st.columns([1, 4])
             
-            if novo_status != is_done:
-                toggle_event_status(event_id, novo_status)
-                st.rerun()
+            with col1:
+                st.write(f"**{hora_formatada}**")
+                
+            with col2:
+                novo_status = st.checkbox(f"{nome_evento}", value=is_done, key=event_id)
+                
+                if novo_status != is_done:
+                    toggle_event_status(event_id, novo_status)
+                    st.rerun()
+
+    with col_principal_direita:
+        st.subheader("Próximos Aniversários 🎂")
+    
+    # Lista de exemplo com as pessoas da secção
+        aniversariantes = [
+            {"nome": "Maria Silva", "data": "25/07"},
+            {"nome": "João Santos", "data": "02/08"},
+            {"nome": "Carlos Sousa", "data": "14/08"}
+        ]
+    
+    # Renderizar os aniversários como pequenos cartões informativos
+        for pessoa in aniversariantes:
+            st.markdown(
+                f"""
+                <div style='background-color: #111111s; padding: 10px; border-radius: 5px; margin-bottom: 8px;'>
+                    <span style='font-size: 18px;'>🎈</span> <b>{pessoa['nome']}</b> - {pessoa['data']}
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+
 
 if __name__ == '__main__':
     main()
