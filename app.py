@@ -256,9 +256,9 @@ def main():
     
     # Lista de exemplo com as pessoas da secção
         aniversariantes = [
-            {"nome": "Maria Silva", "data": "25/07"},
-            {"nome": "João Santos", "data": "02/08"},
-            {"nome": "Carlos Sousa", "data": "14/08"}
+            {"nome": "Sd EVANGELISTA", "data": "16/09"},
+            {"nome": "Cap AGILSON", "data": "28/10"},
+            {"nome": "Cel PABLO", "data": "10/11"}
         ]
     
     # Renderizar os aniversários como pequenos cartões informativos
