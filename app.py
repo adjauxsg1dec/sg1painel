@@ -4,10 +4,9 @@ import os.path
 import datetime
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# Permissões que a nossa app precisa (Ler eventos)
+# Permissões que a nossa app precisa (Letra minúscula e apenas leitura)
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
 # -------------------------------------------------------------
@@ -42,37 +41,39 @@ def toggle_event_status(event_id, completed):
     conn.close()
 
 # -------------------------------------------------------------
-# 2. FUNÇÕES DO GOOGLE CALENDAR
+# 2. FUNÇÕES DO GOOGLE CALENDAR (ADAPTADO PARA PRODUÇÃO)
 # -------------------------------------------------------------
 def get_calendar_service():
-    """Lida com o login no Google e retorna o serviço da API."""
+    """Lida com a autenticação no Google através dos Secrets do Streamlit."""
     creds = None
-    # O arquivo token.json armazena o token de acesso do utilizador após o 1º login.
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     
-    # Se não houver credenciais válidas, pede para fazer o login no navegador
+    # 1. Tenta carregar as credenciais autorizadas diretamente dos Secrets do Streamlit
+    if "google_token" in st.secrets:
+        token_info = dict(st.secrets["google_token"])
+        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    
+    # 2. Se o token estiver expirado mas tiver Refresh Token, tenta renovar em segundo plano
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                st.error(f"Erro ao renovar o token de acesso: {e}")
+                st.stop()
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Guarda as credenciais para a próxima vez
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+            st.error("Erro de Configuração: O bloco 'google_token' não foi encontrado nos Secrets do Streamlit.")
+            st.info("Gere o ficheiro 'token.json' localmente e cole as propriedades no painel do Streamlit Cloud.")
+            st.stop()
 
     return build('calendar', 'v3', credentials=creds)
 
 def get_todays_events(service):
     """Puxa os eventos programados para o dia de hoje de uma agenda específica."""
-    # Garante o uso do fuso horário local
     hoje = datetime.datetime.now().astimezone()
     
     inicio_dia = hoje.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     fim_dia = hoje.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
 
-    # SUBSTITUA 'primary' PELO ID QUE COPIOU DO GOOGLE AGENDA (Mantenha as aspas)
     ID_DA_AGENDA_PARTILHADA = "chefe.sg1.dec@gmail.com"
 
     events_result = service.events().list(
@@ -89,15 +90,13 @@ def get_todays_events(service):
 # 3. INTERFACE VISUAL (STREAMLIT)
 # -------------------------------------------------------------
 def main():
-
-    st.set_page_config(page_title="Agenda Check-in", page_icon="images/LogoDec.png")
-    
+    # Definição de página única (duplicação removida)
     st.set_page_config(page_title="Agenda Check-in", page_icon="images/LogoDec.png")
 
+    # Layout do cabeçalho corrigido
     col_title_1, col_title_2, col_title_3 = st.columns([1, 6, 1], vertical_alignment="center")
 
     col_title_1.image("images/LogoDec.png", width=50)
-
     col_title_2.markdown("<h1 style='text-align: center; margin: 0;'>Agenda Diária - SG1/DEC</h1>", unsafe_allow_html=True)
 
     with col_title_3:
@@ -105,16 +104,15 @@ def main():
         st.image("images/LogoDec.png", width=50)
         st.markdown("</div>", unsafe_allow_html=True)
 
-
-    # Inicializar Banco de Dados
+    # Inicializar Banco de Dados SQLite
     init_db()
 
-    # Tentar conectar ao Google Calendar
+    # Tentar conectar ao Google Calendar utilizando st.secrets
     try:
         service = get_calendar_service()
         eventos = get_todays_events(service)
     except Exception as e:
-        st.error(f"Erro ao conectar com o Google Calendar. Verifique o ficheiro credentials.json. Erro: {e}")
+        st.error(f"Erro ao conectar com o Google Calendar. Verifique os Secrets configurados. Erro: {e}")
         return
 
     st.subheader(f"Eventos de Hoje ({datetime.date.today().strftime('%d/%m/%Y')})")
@@ -123,36 +121,31 @@ def main():
         st.info("Não tem eventos agendados para hoje na sua Google Agenda!")
         return
 
-    # Desenhar a lista de eventos na tela
+    # Desenhar a lista de eventos no ecrã
     for evento in eventos:
-        # Extrair título e ID
         nome_evento = evento.get('summary', 'Sem Título')
         event_id = evento['id']
         
-        # Extrair e formatar a hora do evento
         inicio = evento['start'].get('dateTime', evento['start'].get('date'))
         try:
             hora_formatada = datetime.datetime.fromisoformat(inicio.replace('Z', '+00:00')).strftime('%H:%M')
         except:
-            hora_formatada = "Dia inteiro" # Para eventos que não têm hora específica
+            hora_formatada = "Dia inteiro"
 
-        # Verificar no SQLite se já está concluído
         is_done = is_event_completed(event_id)
 
-        # Criar as colunas (Hora | Checkbox)
+        # Colunas reconfiguradas corretamente
         col1, col2 = st.columns([1, 4])
         
         with col1:
             st.write(f"**{hora_formatada}**")
             
         with col2:
-            # st.checkbox retorna True ou False dependendo se o utilizador clicou
             novo_status = st.checkbox(f"{nome_evento}", value=is_done, key=event_id)
             
-            # Se o utilizador clicou no checkbox e mudou o status, atualizamos o banco de dados
             if novo_status != is_done:
                 toggle_event_status(event_id, novo_status)
-                st.rerun() # Atualiza a tela instantaneamente para refletir a mudança
+                st.rerun()
 
 if __name__ == '__main__':
     main()
