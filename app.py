@@ -1,277 +1,305 @@
-import streamlit as st
-import sqlite3
-import os.path
+"""
+Painel SG1/DEC — Chefia, Agenda e Aniversariantes
+"""
 import datetime
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import os
 
-# Permissões que a nossa app precisa (Letra minúscula e apenas leitura)
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+import streamlit as st
+import streamlit.components.v1 as components
 
-# -------------------------------------------------------------
-# 1. FUNÇÕES DO BANCO DE DADOS (SQLite)
-# -------------------------------------------------------------
-def init_db():
-    """Cria o banco de dados e as tabelas necessárias se não existirem."""
-    conn = sqlite3.connect('agenda_checks.db')
-    c = conn.cursor()
+import database as db
+import style
+from google_calendar import get_todays_events
+
+LOGO_PATH = "images/LogoDec.png"
+FOTO_PADRAO = "images/foto_chefe.jpg"
+
+# =================================================================
+# CONFIGURAÇÃO DA PÁGINA
+# =================================================================
+
+st.set_page_config(
+    page_title="Painel SG1",
+    page_icon=LOGO_PATH if os.path.exists(LOGO_PATH) else "📋",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+db.init_db()
+style.inject_global_css()
+
+# =================================================================
+# CABEÇALHO
+# =================================================================
+
+@st.fragment(run_every=1)
+def render_relogio() -> None:
+    agora = datetime.datetime.now()
+    st.markdown(
+        f"<div class='relogio'>{agora.strftime('%H:%M:%S')}</div>"
+        f"<div class='relogio-data'>{agora.strftime('%d/%m/%Y')}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_header() -> None:
+    col_logo, col_titulo, col_relogio = st.columns(
+        [0.6, 3.9, 1.5], vertical_alignment="center"
+    )
     
-    # 1. Cria a tabela das tarefas concluídas do calendário
-    c.execute('''CREATE TABLE IF NOT EXISTS completed_events (event_id TEXT PRIMARY KEY)''')
-    
-    # 2. Cria a tabela de status do chefe
-    c.execute('''CREATE TABLE IF NOT EXISTS chefe_status (id INTEGER PRIMARY KEY, status TEXT)''')
-    
-    # CORREÇÃO AQUI: Usa SELECT para verificar se a tabela está vazia
-    c.execute("SELECT count(*) FROM chefe_status")
-    if c.fetchone()[0] == 0:
-        # Se estiver vazia, define o primeiro status padrão como 'Presente'
-        c.execute("INSERT INTO chefe_status (id, status) VALUES (1, 'Presente')")
-    
-    conn.commit()
-    conn.close()
-
-
-def is_event_completed(event_id):
-    """Verifica se um evento específico já foi marcado como concluído."""
-    conn = sqlite3.connect('agenda_checks.db')
-    c = conn.cursor()
-    c.execute("SELECT event_id FROM completed_events WHERE event_id=?", (event_id,))
-    result = c.fetchone()
-    conn.close()
-    return result is not None
-
-def toggle_event_status(event_id, completed):
-    """Marca ou desmarca um evento no SQLite."""
-    conn = sqlite3.connect('agenda_checks.db')
-    c = conn.cursor()
-    if completed:
-        c.execute("INSERT OR IGNORE INTO completed_events (event_id) VALUES (?)", (event_id,))
-    else:
-        c.execute("DELETE FROM completed_events WHERE event_id=?", (event_id,))
-    conn.commit()
-    conn.close()
-
-def get_chefe_status():
-    """Procura o status atual do chefe na base de dados global."""
-    conn = sqlite3.connect('agenda_checks.db')
-    c = conn.cursor()
-    c.execute("SELECT status FROM chefe_status WHERE id=1")
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else "Presente"
-
-def update_chefe_status(novo_status):
-    """Atualiza o status do chefe na base de dados global."""
-    conn = sqlite3.connect('agenda_checks.db')
-    c = conn.cursor()
-    c.execute("UPDATE chefe_status SET status=? WHERE id=1", (novo_status,))
-    conn.commit()
-    conn.close()
-
-# -------------------------------------------------------------
-# 2. FUNÇÕES DO GOOGLE CALENDAR (ADAPTADO PARA PRODUÇÃO)
-# -------------------------------------------------------------
-def get_calendar_service():
-    """Lida com a autenticação no Google através dos Secrets do Streamlit."""
-    creds = None
-    
-    # 1. Tenta carregar as credenciais autorizadas diretamente dos Secrets do Streamlit
-    if "google_token" in st.secrets:
-        token_info = dict(st.secrets["google_token"])
-        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-    
-    # 2. Se o token estiver expirado mas tiver Refresh Token, tenta renovar em segundo plano
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                st.error(f"Erro ao renovar o token de acesso: {e}")
-                st.stop()
-        else:
-            st.error("Erro de Configuração: O bloco 'google_token' não foi encontrado nos Secrets do Streamlit.")
-            st.info("Gere o ficheiro 'token.json' localmente e cole as propriedades no painel do Streamlit Cloud.")
-            st.stop()
-
-    return build('calendar', 'v3', credentials=creds)
-
-def get_todays_events(service):
-
-    """Puxa os eventos programados para o dia de hoje de uma agenda específica."""
-    hoje = datetime.datetime.now().astimezone()
-    
-    inicio_dia = hoje.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    fim_dia = hoje.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
-
-    ID_DA_AGENDA_PARTILHADA = "chefe.sg1.dec@gmail.com"
-
-    events_result = service.events().list(
-        calendarId=ID_DA_AGENDA_PARTILHADA, 
-        timeMin=inicio_dia, 
-        timeMax=fim_dia,
-        singleEvents=True, 
-        orderBy='startTime'
-    ).execute()
-    
-    return events_result.get('items', [])
-
-# -------------------------------------------------------------
-# 3. INTERFACE VISUAL (STREAMLIT)
-# -------------------------------------------------------------
-
-def main():
-    # Definição de página única
-    st.set_page_config(page_title="Agenda Check-in", page_icon="images/LogoDec.png", layout="wide")
-
-    col_title_1, col_title_2, col_title_3 = st.columns([1, 6, 1], vertical_alignment="center")
-    col_title_1.image("images/LogoDec.png", width=50)
-    col_title_2.markdown("<h1 style='text-align: center; margin: 0;'>SG1/DEC</h1>", unsafe_allow_html=True)
-
-    with col_title_3:
-        st.markdown("<div style='text-align: right;'>", unsafe_allow_html=True)
-        st.image("images/LogoDec.png", width=50)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    col_principal_esquerda, col_princial_meio, col_principal_direita = st.columns([1.5, 3, 1.5])
-
-    with col_principal_esquerda:
-        # Inicializa o banco de dados e insere o status 'Presente' se for a 1ª execução
-        init_db()
-        
-        # Procura o status atual diretamente do banco de dados criado
-        status_atual = get_chefe_status()
-        
-        # Configura as cores do botão com base no status ATUAL do chefe
-        if status_atual == "Presente":
-            proximo_status = "Em Reunião"
-            cor_botao = "#2ecc71"       # Verde para Presente
-            cor_texto_botao = "#ffffff" # Texto Branco
-        elif status_atual == "Em Reunião":
-            proximo_status = "Ausente"
-            cor_botao = "#f1c40f"       # Amarelo para Em Reunião
-            cor_texto_botao = "#000000" # Texto Preto
-        else:
-            status_atual = "Ausente" # Garante conformidade de texto
-            proximo_status = "Presente"
-            cor_botao = "#e74c3c"       # Vermelho para Ausente
-            cor_texto_botao = "#ffffff" # Texto Branco
-
-        # Título da secção centralizado
-        st.markdown("<h3 style='text-align: center;'>📍 Status da Chefia</h3>", unsafe_allow_html=True)
-    
-        # Foto do chefe centralizada
-        sub_c1, sub_c2, sub_c3 = st.columns([1, 2, 1])
-        with sub_c2:
-            st.image("images/foto_chefe.jpg", use_container_width=True)
+    with col_logo:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, width=44)
             
-        # Texto informativo com o estado atual do chefe
+    with col_titulo:
         st.markdown(
-            f"""
-            <p style='text-align: center; margin-top: 10px; font-size: 16px; color: #555;'>
-                O Chefe está atualmente: <br>
-                <strong style='font-size: 24px; color: {cor_botao if status_atual != "Em Reunião" else "#d35400"};'>{status_atual}</strong>
-            </p>
-            """, 
-            unsafe_allow_html=True
+            "<div class='eyebrow'>Seção de Pessoal</div>"
+            "<h1 style='margin:0;font-size:28px;'>SG1</h1>",
+            unsafe_allow_html=True,
         )
         
-        # Injeta o CSS para colorir o botão dinamicamente na tela
+    with col_relogio:
+        render_relogio()
+
+
+# =================================================================
+# PAINEL — STATUS DA CHEFIA
+# =================================================================
+@st.fragment(run_every=4)
+def render_painel_chefia() -> None:
+    chefe = db.get_chefe_atual()
+    status = chefe.get("status", "Presente")
+    slug = db.STATUS_SLUG.get(status, "presente")
+    foto = chefe.get("foto_path") or FOTO_PADRAO
+    foto = foto if foto and os.path.exists(foto) else None
+
+    with st.container(key="painel_chefia"):
+        st.markdown("<div class='eyebrow'>Status da Chefia</div>", unsafe_allow_html=True)
+
+        _, col_img, _ = st.columns([1, 1.3, 1])
+        with col_img:
+            with st.container(key=f"foto_badge_{slug}"):
+                if foto:
+                    st.image(foto, use_container_width=True)
+                else:
+                    st.markdown(
+                        "<div style='text-align:center;font-size:40px;padding:30px 0;'>👤</div>",
+                        unsafe_allow_html=True,
+                    )
+
         st.markdown(
             f"""
-            <style>
-            div[data-testid="stVerticalBlock"] button {{
-                background-color: {cor_botao} !important;
-                color: {cor_texto_botao} !important;
-                border: 1px solid {cor_botao} !important;
-                font-weight: bold !important;
-                font-size: 16px !important;
-                padding: 10px !important;
-                transition: opacity 0.2s;
-            }}
-            div[data-testid="stVerticalBlock"] button:hover {{
-                opacity: 0.85 !important;
-                color: {cor_texto_botao} !important;
-            }}
-            </style>
-            """, 
-            unsafe_allow_html=True
-        )
-        
-        # Botão interativo que altera a cor e atualiza para todos os acessos do site
-        if st.button(f"Mudar para: {proximo_status}", use_container_width=True):
-            update_chefe_status(proximo_status)
-            st.rerun()
-
-    with col_princial_meio:
-
-        st.subheader("Agenda Diária 📅")
-        # Inicializar Banco de Dados SQLite
-       
-        init_db()
-
-        # Tentar conectar ao Google Calendar utilizando st.secrets
-        try:
-            service = get_calendar_service()
-            eventos = get_todays_events(service)
-        except Exception as e:
-            st.error(f"Erro ao conectar com o Google Calendar. Verifique os Secrets configurados. Erro: {e}")
-            return
-
-        st.subheader(f"Eventos de Hoje ({datetime.date.today().strftime('%d/%m/%Y')})")
-
-        if not eventos:
-            st.info("Não tem eventos agendados para hoje na sua Google Agenda!")
-            return
-
-        # Desenhar a lista de eventos no ecrã
-        for evento in eventos:
-            nome_evento = evento.get('summary', 'Sem Título')
-            event_id = evento['id']
-            
-            inicio = evento['start'].get('dateTime', evento['start'].get('date'))
-            try:
-                hora_formatada = datetime.datetime.fromisoformat(inicio.replace('Z', '+00:00')).strftime('%H:%M')
-            except:
-                hora_formatada = "Dia inteiro"
-
-            is_done = is_event_completed(event_id)
-
-            # Colunas reconfiguradas corretamente
-            col1, col2 = st.columns([1, 4])
-            
-            with col1:
-                st.write(f"**{hora_formatada}**")
-                
-            with col2:
-                novo_status = st.checkbox(f"{nome_evento}", value=is_done, key=event_id)
-                
-                if novo_status != is_done:
-                    toggle_event_status(event_id, novo_status)
-                    st.rerun()
-
-    with col_principal_direita:
-        st.subheader("🎈Próximos Aniversários🎈")
-    
-    # Lista de exemplo com as pessoas da secção
-        aniversariantes = [
-            {"nome": "Sd EVANGELISTA", "data": "16/09"},
-            {"nome": "Cap AGILSON", "data": "28/10"},
-            {"nome": "Cel PABLO", "data": "10/11"}
-        ]
-    
-    # Renderizar os aniversários como pequenos cartões informativos
-        for pessoa in aniversariantes:
-            st.markdown(
-                f"""
-                <div style='background-color: #111111s; padding: 10px; border-radius: 5px; margin-bottom: 8px;'>
-                    <span style='font-size: 18px;'>🎈</span> <b>{pessoa['nome']}</b> - {pessoa['data']}
+            <div style="text-align:center;">
+                <div style="font-size:18px;font-weight:600;">
+                    {chefe.get('posto','')} {chefe.get('nome','')}
                 </div>
-                """, 
-                unsafe_allow_html=True
-            )
+                <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;
+                            color:{style.STATUS_CORES.get(status, style.COLORS['presente'])};
+                            font-size:15px;font-weight:700;letter-spacing:0.05em;">
+                    {status.upper()}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.write("")
+        proximo = db.STATUS_SEGUINTE[status]
+        if st.button(f"Alterar para: {proximo}", use_container_width=True, key="btn_status_chefe"):
+            db.atualizar_status_chefe(proximo)
+            st.rerun(scope="fragment")
 
 
-if __name__ == '__main__':
+# =================================================================
+# PAINEL — AGENDA (Google Calendar + tarefas locais)
+# =================================================================
+@st.fragment(run_every=4)
+def render_painel_agenda() -> None:
+    with st.container(key="painel_agenda"):
+        st.markdown("<div class='eyebrow'>Agenda do Dia</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<h3 style='margin:0 0 10px 0;'>{datetime.date.today().strftime('%d/%m/%Y')}</h3>",
+            unsafe_allow_html=True,
+        )
+
+        tarefas = []
+        try:
+            for ev in get_todays_events():
+                inicio = ev["start"].get("dateTime", ev["start"].get("date"))
+                hora = None
+                if "T" in (inicio or ""):
+                    try:
+                        hora = datetime.datetime.fromisoformat(
+                            inicio.replace("Z", "+00:00")
+                        ).strftime("%H:%M")
+                    except ValueError:
+                        hora = None
+                tarefas.append({"id": ev["id"], "titulo": ev.get("summary", "Sem título"), "horario": hora})
+        except Exception as e:
+            st.warning(f"Google Calendar indisponível no momento ({e}).")
+
+        for t in db.list_tarefas_locais():
+            tarefas.append({"id": f"local-{t['id']}", "titulo": t["titulo"], "horario": t["horario"]})
+
+        if not tarefas:
+            st.info("Nenhuma tarefa para hoje.")
+            return
+
+        tarefas.sort(key=lambda x: x["horario"] or "00:00")
+        concluidas = db.get_concluidas()
+
+        with st.container(key="agenda_scroll"):
+            for t in tarefas:
+                concluida = t["id"] in concluidas
+                col_check, col_txt = st.columns([0.35, 5], vertical_alignment="center")
+                with col_check:
+                    novo = st.checkbox(
+                        "", value=concluida, key=f"chk_{t['id']}", label_visibility="collapsed"
+                    )
+                with col_txt:
+                    classe = "tarefa-concluida" if concluida else ""
+                    hora_exibida = t["horario"] or "Dia todo"
+                    st.markdown(
+                        f"<div class='tarefa-linha'><span class='tarefa-hora'>{hora_exibida}</span>"
+                        f"<span class='{classe}'>{t['titulo']}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                if novo != concluida:
+                    db.set_tarefa_concluida(t["id"], novo)
+                    st.rerun(scope="fragment")
+
+
+# =================================================================
+# PAINEL — ANIVERSARIANTES
+# =================================================================
+
+@st.fragment(run_every=10)
+def render_painel_aniversarios() -> None:
+    with st.container(key="painel_aniversarios"):
+        st.markdown("<div class='eyebrow'>Próximos Aniversários</div>", unsafe_allow_html=True)
+
+        proximos = db.list_proximos_aniversariantes()
+        if not proximos:
+            st.info("Nenhum aniversário futuro cadastrado para este ano.")
+            return
+
+        with st.container(key="aniversarios_scroll"):
+            for pessoa in proximos:
+                data_fmt = pessoa["proxima_data"].strftime("%d/%m")
+                st.markdown(
+                    f"""
+                    <div class='aniversario-card'>
+                        🎂 <b>{pessoa['posto']} {pessoa['nome']}</b>
+                        <div class='aniversario-data'>{data_fmt}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+# =================================================================
+# SIDEBAR — ADMINISTRAÇÃO
+# =================================================================
+
+def render_sidebar() -> None:
+    with st.sidebar:
+        st.markdown("## ⚙️ Administração")
+
+        with st.expander("🎂 Aniversariantes", expanded=False):
+            with st.form("form_aniversariante", clear_on_submit=True):
+                cpf = st.text_input("CPF")
+                posto = st.text_input("Posto/Graduação")
+                nome = st.text_input("Nome")
+                data_nasc = st.date_input(
+                    "Data de Nascimento",
+                    value=datetime.date(1990, 1, 1),
+                    min_value=datetime.date(1930, 1, 1),
+                    max_value=datetime.date.today(),
+                    format="DD/MM/YYYY",
+                )
+                if st.form_submit_button("Adicionar", use_container_width=True):
+                    if nome.strip() and posto.strip():
+                        db.add_aniversariante(cpf.strip(), posto.strip(), nome.strip(), data_nasc.isoformat())
+                        st.success(f"{posto} {nome} adicionado(a).")
+                    else:
+                        st.warning("Informe ao menos nome e posto/graduação.")
+
+            cadastrados = db.list_aniversariantes()
+            if cadastrados:
+                st.caption(f"{len(cadastrados)} cadastrado(s)")
+                for pessoa in cadastrados:
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{pessoa['posto']} {pessoa['nome']}")
+                    if c2.button("🗑️", key=f"del_aniv_{pessoa['id']}"):
+                        db.remover_aniversariante(pessoa["id"])
+                        st.rerun()
+
+        with st.expander("📌 Agenda — Tarefa Manual", expanded=False):
+            with st.form("form_tarefa", clear_on_submit=True):
+                titulo = st.text_input("Descrição da tarefa")
+                dia_inteiro = st.checkbox("Dia inteiro (sem horário definido)")
+                hora = st.time_input(
+                    "Horário", value=datetime.time(8, 0), disabled=dia_inteiro
+                )
+                if st.form_submit_button("Adicionar Tarefa", use_container_width=True):
+                    if titulo.strip():
+                        horario = None if dia_inteiro else hora.strftime("%H:%M")
+                        db.add_tarefa_local(titulo.strip(), horario)
+                        st.success("Tarefa adicionada à agenda.")
+                    else:
+                        st.warning("Informe a descrição da tarefa.")
+
+            tarefas_locais = db.list_tarefas_locais()
+            if tarefas_locais:
+                st.caption(f"{len(tarefas_locais)} tarefa(s) manual(is)")
+                for t in tarefas_locais:
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{t['horario'] or 'Dia todo'} — {t['titulo']}")
+                    if c2.button("🗑️", key=f"del_tarefa_{t['id']}"):
+                        db.remover_tarefa_local(t["id"])
+                        st.rerun()
+
+        with st.expander("👤 Alterar Chefia", expanded=False):
+            chefe_atual = db.get_chefe_atual()
+            st.caption(f"Atual: {chefe_atual.get('posto','')} {chefe_atual.get('nome','')}")
+            with st.form("form_chefia", clear_on_submit=True):
+                novo_posto = st.text_input("Posto/Graduação")
+                novo_nome = st.text_input("Nome")
+                nova_foto = st.file_uploader("Foto (opcional)", type=["png", "jpg", "jpeg"])
+                if st.form_submit_button("Atualizar Chefia", use_container_width=True):
+                    if novo_nome.strip() and novo_posto.strip():
+                        caminho_foto = None
+                        if nova_foto is not None:
+                            os.makedirs("images", exist_ok=True)
+                            ext = nova_foto.name.split(".")[-1]
+                            timestamp = int(datetime.datetime.now().timestamp())
+                            caminho_foto = f"images/chefe_{timestamp}.{ext}"
+                            with open(caminho_foto, "wb") as f:
+                                f.write(nova_foto.getbuffer())
+                        db.trocar_chefe(novo_nome.strip(), novo_posto.strip(), caminho_foto)
+                        st.success(f"Chefia atualizada: {novo_posto} {novo_nome}.")
+                    else:
+                        st.warning("Informe nome e posto/graduação.")
+
+
+# =================================================================
+# ENTRY POINT
+# =================================================================
+
+def main() -> None:
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    render_header()
+    render_sidebar()
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col_esq, col_meio, col_dir = st.columns([1.2, 2.1, 1.2])
+    with col_esq:
+        render_painel_chefia()
+    with col_meio:
+        render_painel_agenda()
+    with col_dir:
+        render_painel_aniversarios()
+
+
+if __name__ == "__main__":
     main()
