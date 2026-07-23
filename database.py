@@ -1,12 +1,3 @@
-"""
-Camada de acesso a dados (SQLite) do Painel SG1/DEC.
-
-Todas as escritas usam `with sqlite3.connect(...)` para garantir commits
-atômicos por operação. O SQLite lida bem com esse padrão de baixa
-concorrência (múltiplas sessões do Streamlit lendo/escrevendo no mesmo
-arquivo), o que é o que permite a sincronização entre navegadores: cada
-sessão simplesmente relê o banco periodicamente (veja app.py).
-"""
 import sqlite3
 import datetime
 from typing import List, Dict, Any, Optional
