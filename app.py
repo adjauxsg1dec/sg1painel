@@ -3,6 +3,7 @@ Painel SG1/DEC — Chefia, Agenda e Aniversariantes
 """
 import datetime
 import os
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -33,7 +34,7 @@ style.inject_global_css()
 
 @st.fragment(run_every=1)
 def render_relogio() -> None:
-    agora = datetime.datetime.now()
+    agora = datetime.datetime.now(ZoneInfo("America/Sao_Paulo"))
     st.markdown(
         f"<div class='relogio'>{agora.strftime('%H:%M:%S')}</div>"
         f"<div class='relogio-data'>{agora.strftime('%d/%m/%Y')}</div>",
