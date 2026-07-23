@@ -290,7 +290,6 @@ def main() -> None:
     st.markdown("<br>", unsafe_allow_html=True)
     render_header()
     render_sidebar()
-    st.markdown("<br>", unsafe_allow_html=True)
 
     col_esq, col_meio, col_dir = st.columns([1.2, 2.1, 1.2])
     with col_esq:
